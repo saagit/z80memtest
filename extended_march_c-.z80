@@ -1,0 +1,195 @@
+; Implementation of Extended March C- in Z80 assembler.
+
+; Copyright (c) 2023 Scott A. Anderson (saagit)
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in all
+; copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
+; I wanted to do a fairly thorough memory test on an S-100 64K DRAM card using a
+; Z80 processor.  The internet led me to this reference on March memory tests:
+; https://booksite.elsevier.com/9780123705976/errata/13~Chapter%2008%20MBIST.pdf
+;
+; Summation of page 17 of reference:
+;    March Test Notation
+;    ⇑:  address sequence is ascending order
+;    ⇓:  address sequence is descending order
+;    ⇕:  address sequence is either ⇑ or ⇓
+;    r0: Reading an expected 0 from a cell
+;    r1: Reading an expected 1 from a cell
+;    w0: Writing a 0 into a cell
+;    w1: Writing a 1 into a cell
+;
+; The Extended March C- appeared to be the best memory test for my purposes and
+; page 30 of the reference gives its notation as:
+;    {⇕(w0);⇑(r0,w1,r1);⇑(r1,w0);⇓(r0,w1);⇓(r1,w0);⇕(r0)}
+;
+; Pseudocode based upon this:
+;    Fill memory with 0x00.
+;    For each memory bit in ascending order:
+;        Ensure that the bit is 0.
+;        Set the bit to be 1.
+;        Ensure that the bit is 1.
+;    For each memory bit in ascending order:
+;        Ensure that the bit is 1.
+;        Set the bit to be 0.
+;    For each memory bit in descending order:
+;        Ensure that the bit is 0.
+;        Set the bit to be 1.
+;    For each memory bit in descending order:
+;        Ensure that the bit is 1.
+;        Set the bit to be 0.
+;    Ensure all memory locations are 0x00.
+
+; I have a logic analyzer connected to the Z80 while running this memory test
+; so I can watch what the processor does.  This means that when an error is
+; detected, the processor can simply be halted without any error reporting.
+; The logic analyzer can then be used to analyze what happened.  Not needing
+; to report errors greatly simplifies the code and makes it more portable.
+
+; Testing 62KB of memory with a 2 MHz Z80 takes just less than 55 seconds.
+
+; Disclaimer: I am not an expert on memory testing nor Z80 assembler.
+
+        org     00000h
+mBegin: equ     0x0800
+mEnd:   equ     0xFFFF
+mLen:   equ     mEnd - mBegin + 1
+
+; Derive values for 16-bit loop counter as described by
+; https://wikiti.brandonw.net/index.php?title=Z80_Optimization
+mLenO:  equ     ((mLen - 1) >> 8) + 1 ; Value for outer counter loop in C reg
+mLenI:  equ     mLen & 0xFF           ; Value for inner counter loop in B reg
+mLenBC: equ     (mLenI << 8) | mLenO
+
+        ;; Fill memory with 0x00.
+        ;; This takes 0.7 seconds on a 2 MHz Z80 for 62KB of memory.
+        ld      hl, mBegin
+        ld      de, mBegin+1
+        xor     a
+        ld      (hl), a
+        ld      bc, mLen - 1
+        ldir                    ; This could be unrolled to optimize...
+
+        ;; For each memory bit in ascending order:
+        ;;   Ensure that the bit is 0.
+        ;;   Set the bit to be 1.
+        ;;   Ensure that the bit is 1.
+        ;;
+        ;; Note that because of the byte-wide memory interface, ensuring that
+        ;; bits 1 through 7 are 0 is redundant with checking that the prior
+        ;; bit was 1.  In light of this the pseudocode can be optimized as:
+        ;;
+        ;; For memory byte in ascending order:
+        ;;   Ensure that the byte is 0
+        ;;   For each memory bit in the memory byte in ascending order:
+        ;;     Set the bit to be 1.
+        ;;     Ensure that the bit is 1.
+        ;; This takes 14.7 seconds on a 2 MHz Z80 for 62KB of memory.
+        ld      hl, mBegin      ; HL: pointer to byte to be tested
+        ld      bc, mLenBC      ; BC: two 8-bit counters to loop through mLen
+        ld      e, 0xFF         ; E: 0xFF to make comparisons easy
+as_nbyt:xor     a               ; A: the test value initially 0x00
+        cp      (hl)            ; Ensure that the byte is 0.
+        jr      nz, as_halt
+as_nbit:sla     a               ; Shift the test value left and
+        inc     a               ;  set the LSB to set the next bit in the byte.
+        ld      (hl), a         ; Set the bit in memory to be 1.
+        cp      (hl)            ; Ensure that the bit is 1.
+        jr      z, as_ok
+as_halt:halt
+as_ok:  cp      e               ; If the test value is not 0xFF,
+        jr      nz, as_nbit     ;  continue on to next bit pattern.
+        inc     hl              ; On to the next of mLen memory locations
+        djnz    as_nbyt
+        dec     c
+        jr      nz, as_nbyt
+
+        ;; For each memory bit in ascending order:
+        ;;   Ensure that the bit is 1.
+        ;;   Set the bit to be 0.
+        ;; This takes 12.0 seconds on a 2 MHz Z80 for 62KB of memory.
+        ld      hl, mBegin      ; HL: pointer to byte to be tested
+        ld      bc, mLenBC      ; BC: two 8-bit counters to loop through mLen
+                                ; E: still 0xFF to make comparisons easy
+ac_nbyt:ld      a, e            ; We use A as the test value; set it to 0xFF.
+ac_nbit:cp      (hl)            ; Check memory against test value.
+        jr      nz, as_halt
+        sla     a               ; Shift the test value left with 0 LSB.
+        ld      (hl), a         ; Set the bit in memory to be 0.
+        or      a               ; If the test value is not 0x00,
+        jr      nz, ac_nbit     ;  continue on to next bit pattern.
+        inc     hl              ; On to the next of mLen memory locations
+        djnz    ac_nbyt
+        dec     c
+        jr      nz, ac_nbyt
+
+        ;; For each memory bit in descending order:
+        ;;   Ensure that the bit is 0.
+        ;;   Set the bit to be 1.
+        ;; This takes 13.0 seconds on a 2 MHz Z80 for 62KB of memory.
+        ld      hl, mEnd        ; HL: pointer to byte to be tested
+        ld      bc, mLenBC      ; BC: two 8-bit counters to loop through mLen
+        ld      d, 0x80         ; D: MSB set to help generating test values
+                                ; E: still 0xFF to make comparisons easy
+ds_nbyt:xor     a               ; A: the test value initially 0x00
+ds_nbit:cp      (hl)            ; Ensure that the bit is 0.
+        jr      nz, dc_halt
+        srl     a               ; Shift the test value right
+        or      d               ;  with a 1 in the MSB.
+        ld      (hl), a         ; Set the bit in memory to be 1.
+        cp      e               ; If the test value is not 0xFF,
+        jr      nz, ds_nbit     ;  continue on to next bit pattern.
+        dec     hl              ; On to the next of mLen memory locations
+        djnz    ds_nbyt
+        dec     c
+        jr      nz, ds_nbyt
+
+        ;; For each memory bit in descending order:
+        ;;   Ensure that the bit is 1.
+        ;;   Set the bit to be 0.
+        ;; This takes 13.3 seconds on a 2 MHz Z80 for 62KB of memory.
+        ld      hl, mEnd        ; HL: pointer to byte to be tested
+        ld      bc, mLenBC      ; BC: two 8-bit counters to loop through mLen
+                                ; D: still MSB set to help generating test values
+                                ; E: still 0xFF to make comparisons easy
+dc_nbyt:ld      a, e            ; A: the test value initially 0xFF
+dc_nbit:cp      (hl)            ; Ensure that the bit is 0.
+        jr      z, dc_ok
+dc_halt:halt
+dc_ok:  srl     a               ; Shift the test value right with a 0 in MSB.
+        ld      (hl), a         ; Set the bit in memory to be 0.
+        or      a               ; If the test value is not 0x00,
+        jr      nz, dc_nbit     ;  continue on to next bit pattern.
+        dec     hl              ; On to the next of mLen memory locations
+        djnz    dc_nbyt
+        dec     c
+        jr      nz, dc_nbyt
+
+        ;; Ensure all memory locations are 0x00.
+        ;; This takes 1 second on a 2 MHz Z80 for 62KB of memory.
+        ld      hl, mBegin
+        xor     a
+        ld      bc, mLen
+ck_0:   cpi
+        jr      nz, dc_halt
+ck_ok:  jp      pe, ck_0
+
+        halt
+
+        ds 0x0800 - $, 0xFF
+        end
