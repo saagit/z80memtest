@@ -65,20 +65,24 @@
 
 ; Disclaimer: I am not an expert on memory testing nor Z80 assembler.
 
-        org     00000h
-mBegin: equ     0x0800
-mEnd:   equ     0xFFFF
-mLen:   equ     mEnd - mBegin + 1
+romOrg: equ     0xF800          ; Where this code will reside
+romLen: equ     2048            ; How big is the ROM where this code will reside
+
+mBegin: equ     0x0000          ; Lowest address of memory region to test
+mEnd:   equ     0xF7FF          ; Highest address of memory region to test
 
 ; Derive values for 16-bit loop counter as described by
 ; https://wikiti.brandonw.net/index.php?title=Z80_Optimization
+mLen:   equ     mEnd - mBegin + 1
 mLenO:  equ     ((mLen - 1) >> 8) + 1 ; Value for outer counter loop in C reg
 mLenI:  equ     mLen & 0xFF           ; Value for inner counter loop in B reg
 mLenBC: equ     (mLenI << 8) | mLenO
 
+        org     romOrg
+        jp      main	        ; Jump to clear Power On Jump EPROM latch
         ;; Fill memory with 0x00.
         ;; This takes 0.7 seconds on a 2 MHz Z80 for 62KB of memory.
-        ld      hl, mBegin
+main:   ld      hl, mBegin
         ld      de, mBegin+1
         xor     a
         ld      (hl), a
@@ -189,7 +193,7 @@ ck_0:   cpi
         jr      nz, dc_halt
 ck_ok:  jp      pe, ck_0
 
-        halt
+all_ok: halt
 
-        ds 0x0800 - $, 0xFF
+        ds      romLen - ($ - romOrg), 0xFF
         end
