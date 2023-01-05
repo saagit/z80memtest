@@ -61,9 +61,9 @@
 ; The logic analyzer can then be used to analyze what happened.  Not needing
 ; to report errors greatly simplifies the code and makes it more portable.
 
-; Testing 62KB of memory with a 2 MHz Z80 takes just less than 55 seconds.
+; Testing 62KB of memory with a 2 MHz Z80 takes 52.2 seconds.
 
-; Disclaimer: I am not an expert on memory testing nor Z80 assembler.
+; Disclaimer: I am not an expert on memory testing nor Z80 assembly.
 
 romOrg: equ     0xF800          ; Where this code will reside
 romLen: equ     2048            ; How big is the ROM where this code will reside
@@ -80,6 +80,7 @@ mLenBC: equ     (mLenI << 8) | mLenO
 
         org     romOrg
         jp      main	        ; Jump to clear Power On Jump EPROM latch
+error:  halt
         ;; Fill memory with 0x00.
         ;; This takes 0.7 seconds on a 2 MHz Z80 for 62KB of memory.
 main:   ld      hl, mBegin
@@ -103,20 +104,19 @@ main:   ld      hl, mBegin
         ;;   For each memory bit in the memory byte in ascending order:
         ;;     Set the bit to be 1.
         ;;     Ensure that the bit is 1.
-        ;; This takes 14.7 seconds on a 2 MHz Z80 for 62KB of memory.
+        ;; This takes 13.5 seconds on a 2 MHz Z80 for 62KB of memory.
         ld      hl, mBegin      ; HL: pointer to byte to be tested
         ld      bc, mLenBC      ; BC: two 8-bit counters to loop through mLen
         ld      e, 0xFF         ; E: 0xFF to make comparisons easy
 as_nbyt:xor     a               ; A: the test value initially 0x00
         cp      (hl)            ; Ensure that the byte is 0.
-        jr      nz, as_halt
+        jr      nz, error
 as_nbit:sla     a               ; Shift the test value left and
         inc     a               ;  set the LSB to set the next bit in the byte.
         ld      (hl), a         ; Set the bit in memory to be 1.
         cp      (hl)            ; Ensure that the bit is 1.
-        jr      z, as_ok
-as_halt:halt
-as_ok:  cp      e               ; If the test value is not 0xFF,
+        jr      nz, error
+        cp      e               ; If the test value is not 0xFF,
         jr      nz, as_nbit     ;  continue on to next bit pattern.
         inc     hl              ; On to the next of mLen memory locations
         djnz    as_nbyt
@@ -132,7 +132,7 @@ as_ok:  cp      e               ; If the test value is not 0xFF,
                                 ; E: still 0xFF to make comparisons easy
 ac_nbyt:ld      a, e            ; We use A as the test value; set it to 0xFF.
 ac_nbit:cp      (hl)            ; Check memory against test value.
-        jr      nz, as_halt
+        jr      nz, error
         sla     a               ; Shift the test value left with 0 LSB.
         ld      (hl), a         ; Set the bit in memory to be 0.
         or      a               ; If the test value is not 0x00,
@@ -152,7 +152,7 @@ ac_nbit:cp      (hl)            ; Check memory against test value.
                                 ; E: still 0xFF to make comparisons easy
 ds_nbyt:xor     a               ; A: the test value initially 0x00
 ds_nbit:cp      (hl)            ; Ensure that the bit is 0.
-        jr      nz, dc_halt
+        jr      nz, error
         srl     a               ; Shift the test value right
         or      d               ;  with a 1 in the MSB.
         ld      (hl), a         ; Set the bit in memory to be 1.
@@ -166,16 +166,15 @@ ds_nbit:cp      (hl)            ; Ensure that the bit is 0.
         ;; For each memory bit in descending order:
         ;;   Ensure that the bit is 1.
         ;;   Set the bit to be 0.
-        ;; This takes 13.3 seconds on a 2 MHz Z80 for 62KB of memory.
+        ;; This takes 12.0 seconds on a 2 MHz Z80 for 62KB of memory.
         ld      hl, mEnd        ; HL: pointer to byte to be tested
         ld      bc, mLenBC      ; BC: two 8-bit counters to loop through mLen
                                 ; D: still MSB set to help generating test values
                                 ; E: still 0xFF to make comparisons easy
 dc_nbyt:ld      a, e            ; A: the test value initially 0xFF
 dc_nbit:cp      (hl)            ; Ensure that the bit is 0.
-        jr      z, dc_ok
-dc_halt:halt
-dc_ok:  srl     a               ; Shift the test value right with a 0 in MSB.
+        jr      nz, error
+        srl     a               ; Shift the test value right with a 0 in MSB.
         ld      (hl), a         ; Set the bit in memory to be 0.
         or      a               ; If the test value is not 0x00,
         jr      nz, dc_nbit     ;  continue on to next bit pattern.
@@ -185,12 +184,12 @@ dc_ok:  srl     a               ; Shift the test value right with a 0 in MSB.
         jr      nz, dc_nbyt
 
         ;; Ensure all memory locations are 0x00.
-        ;; This takes 1 second on a 2 MHz Z80 for 62KB of memory.
+        ;; This takes 1.0 second on a 2 MHz Z80 for 62KB of memory.
         ld      hl, mBegin
         xor     a
         ld      bc, mLen
 ck_0:   cpi
-        jr      nz, dc_halt
+        jr      nz, error
 ck_ok:  jp      pe, ck_0
 
 all_ok: halt
