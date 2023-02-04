@@ -78,9 +78,25 @@ mLenO:  equ     ((mLen - 1) >> 8) + 1 ; Value for outer counter loop in C reg
 mLenI:  equ     mLen & 0xFF           ; Value for inner counter loop in B reg
 mLenBC: equ     (mLenI << 8) | mLenO
 
+serPort:equ     0x00
+serData:equ     serPort + 0
+serStat:equ     serPort + 1
+serMode:equ     serPort + 2
+serCmd: equ     serPort + 3
+
         org     romOrg
-        jp      main	        ; Jump to clear Power On Jump EPROM latch
-error:  halt
+        in      a, (serCmd)     ; Reset 2661 EPCI register pointers.
+        ld      a, 0x4D         ; Set 2661 MR1 to async 8-N-1.
+        out     (serMode), a
+        ld      a, 0x3F         ; Internal clocks, 1X on pin 9, BKDET
+        out     (serMode), a    ;  on pin 25, async, 19200 baud.
+        ld      a, 0x37         ; Normal operation, RTS low, reset error
+        out     (serCmd), a     ;  flags, DTR low and enable Tx and Rx.
+
+        ld      b, '?'		; Output a '?' to the serial port
+        ld      hl, main	;  and return to main.
+        jp      outch
+
         ;; Fill memory with 0x00.
         ;; This takes 0.7 seconds on a 2 MHz Z80 for 62KB of memory.
 main:   ld      hl, mBegin
@@ -192,7 +208,21 @@ ck_0:   cpi
         jr      nz, error
 ck_ok:  jp      pe, ck_0
 
-all_ok: halt
+all_ok: ld      b, '+'
+        jr      stout
+error:  ld      b, '-'
+stout:  ld      hl, done	; Return to halt.
+        jp      outch
+done:   halt
+
+        ;; Output character in B to serial port and then jump to HL.
+        ;; Uses A.
+outch:  in      a, (serStat)	; Read 2661 SR until transmit holding register
+        bit     0, a		;  is empty.
+        jr      z, outch
+	ld	a, b
+        out     (serData), a
+        jp      (hl)
 
         ds      romLen - ($ - romOrg), 0xFF
         end
